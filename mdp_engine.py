@@ -36,6 +36,9 @@ LAYOUTS = {
     'row': dict(grid="""
         10  .  .  .  1""", noise=0.0, living=0.0, gamma=1.0, walk_from_exits=True, start=(3, 0),
                 names='abcde', moves='WE'),  # ponytail: West first, so the gamma = 1 ties read 'go West' as in the quiz
+    # lesson 7 worked example: -1 | A | B | +1; a move succeeds w.p. 0.8, else the agent slips into a side wall and stays
+    'corridor': dict(grid="""
+        -1  .  S  +1""", noise=0.2, living=0.0, gamma=0.9, names=' AB ', moves='WE'),  # start at B: the tree tab's root
 }
 
 
@@ -367,6 +370,10 @@ if __name__ == '__main__':
                           for x in range(5))
     assert q(1.0) == 'XWWWW' and q(0.1) == 'XWWEX', (q(1.0), q(0.1))
     assert q(0.30)[3] == 'E' and q(0.33)[3] == 'W'
+    # lesson 7 worked example (corridor): the hand-computed table, converged at k = 17
+    cv = value_iteration(GridMDP('corridor'))
+    assert [[round(V[(x, 0)], 2) for x in (1, 2)] for V in cv[:5]] == [[0, 0], [0, 0], [0, .72], [.52, .85], [.71, .87]]
+    assert len(cv) - 1 == 17 and (round(cv[-1][(1, 0)], 3), round(cv[-1][(2, 0)], 3)) == (.771, .878)
     # policy iteration reaches the value-iteration policy
     for name in LAYOUTS:
         mm = GridMDP(name)

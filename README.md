@@ -9,8 +9,8 @@ Self-check: `python3 mdp_engine.py` (checks the CS188 V\* values, the lesson 6 p
 `mdp_tree.py` builds and draws the tree for the Tree tab; self-check `python3 mdp_tree.py` (tree root = V_k for every
 cell, k ≤ 3).
 
-Layouts: `book` (the 4x3 world from the lecture), `bridge`, `cliff`, `discount` (CS188 grids) and `row`
-(the lesson 6 discount quiz, states a–e). Noise 0.2 means 80% as chosen and 10% to each side; a bump into a wall
+Layouts: `book` (the 4x3 world from the lecture), `bridge`, `cliff`, `discount` (CS188 grids), `row`
+(the lesson 6 discount quiz, states a–e) and `corridor` (−1 | A | B | +1, the lesson 7 worked example). Noise 0.2 means 80% as chosen and 10% to each side; a bump into a wall
 leaves the agent in place. Every move pays R, an exit pays its number.
 
 ## Run
@@ -36,6 +36,7 @@ uv run streamlit run app.py
 | Discount quiz | row · γ 1 / 0.3 / 0.33 / 0.1 | d goes West at γ = 1 and 0.33, East at 0.3 and 0.1 (tie at 1/√10 ≈ 0.316) |
 | Value iteration | book · noise 0.2 · R 0 · γ 0.9 | V_2 = 0.72 next to +1 · policy final from k = 10 · values converge (10⁻⁹) at k = 32 |
 | V vs Q (lesson 7) | book · noise 0.2 · R 0 · γ 0.9 · k 100 | below the −1: W 0.28, S 0.27, E 0.13, N −0.65 |
+| Corridor (lesson 7 worked example) | corridor · Value iteration / Tree tab · root B | V_k for (A, B): (0, 0), (0, 0), (0, 0.72), (0.52, 0.85), (0.71, 0.87) for k = 0–4, converges at k = 17 to (0.771, 0.878) · full tree from B: 17 / 53 / 161 state nodes for k = 2–4 |
 | Tree (lesson 7) | Tree tab · book · root (2, 2) | k = 2: V₂ = 0.72 (→ 0.72, ↑ 0.09, ↓ 0.09, ← 0) · state nodes in the full tree: 13 / 115 / 1,063 / 10,075 for k = 1–4 (from the start cell: 11 / 111 / 1,129 / 11,561), never more than 11 different cells per level · only π*: 10 nodes at k = 2 |
 | Policy evaluation (lesson 7) | Policy iteration tab, Evaluate | start cell: Always East −0.30, Always North 0.05, π* 0.49 |
 | Policy iteration (lesson 7) | Policy iteration tab, start Always East / North | improvements change 6 then 2 cells (North: 5 then 1), then none: π* |
