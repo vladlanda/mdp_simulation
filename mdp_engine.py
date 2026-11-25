@@ -90,6 +90,17 @@ class GridMDP:
         r = self.reward(s, a)
         return sum(p * (r + (self.gamma * V[n] if n else 0.0)) for p, _, n in self.outcomes(s, a))
 
+    def explain(self, V, s, actions=None):
+        """One Bellman step at s, term by term: [(a, [(p, next state or None, R, V[next] or None)], Q)].
+        Slips into the same cell are merged into one term."""
+        out = []
+        for a in actions or self.actions(s):
+            r, terms = self.reward(s, a), {}
+            for p, _, n in self.outcomes(s, a):
+                terms[n] = terms.get(n, 0.0) + p
+            out.append((a, [(p, n, r, V[n] if n else None) for n, p in terms.items()], self.q(V, s, a)))
+        return out
+
 
 # ---------------- planning ----------------
 def value_iteration(mdp, k=None, tol=1e-9, k_max=1000):
@@ -205,7 +216,7 @@ def run_many(mdp, pol, n=20, start=None, max_steps=100):
 
 
 # ---------------- drawing (SVG, own look) ----------------
-BG, WALL, LINE, TXT, ORANGE, AGENT = '#0b1020', '#2b6cb0', '#334155', '#e2e8f0', '#f59e0b', '#22c55e'
+BG, WALL, LINE, TXT, ORANGE, AGENT, READ = '#0b1020', '#2b6cb0', '#334155', '#e2e8f0', '#f59e0b', '#22c55e', '#38bdf8'
 
 
 def fmt(v):
@@ -221,10 +232,11 @@ def _shade(v, vmax):
 
 
 def grid_svg(mdp, cell=90, V=None, Q=None, pol=None, agent=None, prev=None, intended=None, actual=None, trail=(),
-             show_names=True, uid='g', changed=()):
+             show_names=True, uid='g', changed=(), read=()):
     """Board as an SVG string. V: values per cell, Q: {s: {a: q}} (drawn as four triangles), pol: arrows,
     agent: cell of the round agent; prev: the cell it came from, intended / actual: the last move's chosen and
-    actual directions (grey dashed / orange arrow out of prev; a bump into a wall is a short arrow back)."""
+    actual directions (grey dashed / orange arrow out of prev; a bump into a wall is a short arrow back).
+    V may cover only some cells (the rest are drawn empty); changed: orange frames; read: light-blue dashed frames."""
     W, H = mdp.w * cell, mdp.h * cell
     X = lambda c: c[0] * cell
     Y = lambda c: (mdp.h - 1 - c[1]) * cell
@@ -258,12 +270,12 @@ def grid_svg(mdp, cell=90, V=None, Q=None, pol=None, agent=None, prev=None, inte
                 t(tx, ty, fmt(q), ORANGE if abs(q - best) < 1e-9 else TXT, round(fs * 0.8))
             continue
         v = Q[c]['X'] if (Q is not None and ex and c in Q) else (V or {}).get(c)
-        fill = _shade(mdp.exits[c] if ex and V is None else v, vmax) if (ex or v is not None) else '#0f172a'
+        fill = _shade(mdp.exits[c] if ex and V is None else v, vmax) if ((ex and V is None) or v is not None) else '#0f172a'
         o.append(f'<rect x="{x}" y="{y}" width="{cell}" height="{cell}" fill="{fill}" stroke="{LINE}" stroke-width="1.5"/>')
         if ex:
             o.append(f'<rect x="{x + 6}" y="{y + 6}" width="{cell - 12}" height="{cell - 12}" fill="none" '
                      f'stroke="{TXT}" stroke-width="1.5"/>')
-        if v is not None or ex:
+        if v is not None or (ex and V is None):
             shown = v if v is not None else mdp.exits[c]
             t(x + cell / 2, y + cell / 2 + (cell * 0.18 if pol and not ex else 0),
               ('%+g' % shown) if (ex and V is None) else fmt(shown), size=round(fs * 1.1))
@@ -285,6 +297,9 @@ def grid_svg(mdp, cell=90, V=None, Q=None, pol=None, agent=None, prev=None, inte
     for c in changed:  # cells that changed in the last step: orange frame
         o.append(f'<rect x="{X(c) + 3}" y="{Y(c) + 3}" width="{cell - 6}" height="{cell - 6}" fill="none" '
                  f'stroke="{ORANGE}" stroke-width="{max(3, cell // 25)}"/>')
+    for c in read:  # cells a Bellman step reads: light-blue dashed frame
+        o.append(f'<rect x="{X(c) + 8}" y="{Y(c) + 8}" width="{cell - 16}" height="{cell - 16}" fill="none" '
+                 f'stroke="{READ}" stroke-width="{max(3, cell // 25)}" stroke-dasharray="7,4"/>')
     for i, c in enumerate(trail):
         o.append(f'<circle cx="{X(c) + cell / 2}" cy="{Y(c) + cell / 2}" r="{cell * 0.06}" fill="{AGENT}" '
                  f'opacity="{0.25 + 0.5 * (i + 1) / len(trail):.2f}"/>')
@@ -374,6 +389,17 @@ if __name__ == '__main__':
     cv = value_iteration(GridMDP('corridor'))
     assert [[round(V[(x, 0)], 2) for x in (1, 2)] for V in cv[:5]] == [[0, 0], [0, 0], [0, .72], [.52, .85], [.71, .87]]
     assert len(cv) - 1 == 17 and (round(cv[-1][(1, 0)], 3), round(cv[-1][(2, 0)], 3)) == (.771, .878)
+    # explain() adds up to q(), and V_k does not depend on the order the cells are visited in
+    for k in (1, 2, 3):
+        Vp = value_iteration(m, k)
+        for order in (m.cells, m.cells[::-1], sorted(m.cells, key=lambda c: (c[0] * 7 + c[1] * 3) % 5)):
+            Vn = {}
+            for c in order:
+                ex = m.explain(Vp[-2], c)
+                for a, terms, qv in ex:
+                    assert abs(sum(p * (r + (m.gamma * v if n else 0.0)) for p, n, r, v in terms) - qv) < 1e-12
+                Vn[c] = max(qv for _, _, qv in ex)
+            assert Vn == Vp[-1], order
     # policy iteration reaches the value-iteration policy
     for name in LAYOUTS:
         mm = GridMDP(name)

@@ -41,6 +41,28 @@ def show_svg(svg):
     st.html(f'<img src="data:image/svg+xml;base64,{b64}" style="max-width:min(100%,760px)">')
 
 
+def cell_name(m, c):
+    return f"{c}" + (f" exit {m.exits[c]:+g}" if c in m.exits else (f" {m.names[c]}" if m.names.get(c, " ").strip() else ""))
+
+
+def breakdown(m, ex, vname, mark=None):
+    """Markdown table of one Bellman step: per action, the terms p·(R + γ·V(s′)) and Q; the best (or `mark`) in bold."""
+    g = f"{m.gamma:g}"
+    num = lambda v: f"({v:.2f})" if v < 0 else f"{v:.2f}"
+    best = max(q for _, _, q in ex)
+    rows = ["| Action | Σ p · (R + γ · " + vname + "(s′)) | Q |", "|---|---|---|"]
+    for a, terms, q in ex:
+        t = " + ".join(f"{p:g}·({r:g} + {g}·{num(v)})" if n else f"{p:g}·({r:+g})" for p, n, r, v in terms)
+        on = (a == mark) if mark else abs(q - best) < 1e-9
+        b = "**" if on else ""
+        rows.append(f"| {b}{ARROW[a]}{b} | {t} | {b}{q:.2f}{b} |")
+    return "\n".join(rows)
+
+
+def reads(ex):
+    return sorted({n for _, terms, _ in ex for _, n, _, _ in terms if n})
+
+
 tab_grid, tab_vi, tab_tree, tab_pi, tab_about = st.tabs(["Gridworld", "Value iteration", "Tree", "Policy iteration",
                                                         "About"])
 
@@ -181,6 +203,38 @@ with tab_vi:
         if len(Vs) - 1 > K:
             st.caption(f"The slider stops at k = {K}.")
 
+    if k:
+        st.markdown(f"#### Inside round {k}: how each V{sub(k)}(s) is computed")
+        order = m.cells
+        ckey = f"vi_cell_{m.name}_{m.noise}_{m.living}_{m.gamma}_{k}"
+        c1, c2, c3, c4 = st.columns([3, .5, .5, 2])
+        j = stepper(c1, c2, c3, "Cells computed (engine order: row by row from the bottom-left)", ckey, len(order),
+                    "vi_cell")
+
+        def jump(ckey, jkey):
+            st.session_state[ckey] = order.index(st.session_state[jkey]) + 1
+        jkey = f"vi_jump_{ckey}_{j}"  # new key per position, so the box follows ◀ ▶
+        c4.selectbox("Jump to cell", order, index=max(j - 1, 0), format_func=lambda c: cell_name(m, c),
+                     key=jkey, on_change=jump, args=(ckey, jkey))
+        cur = order[j - 1] if j else None
+        ex = m.explain(Vs[k - 1], cur) if cur else None
+        small = max(45, cell_size(m) * 3 // 5)
+        b1, b2 = st.columns(2)
+        with b1:
+            st.markdown(f"**Read only: V{sub(k - 1)}** (light-blue frames: the cells this step reads)")
+            show_svg(grid_svg(m, small, V=Vs[k - 1], read=reads(ex) if ex else (), uid='vir'))
+        with b2:
+            st.markdown(f"**Written: V{sub(k)}** (orange: the cell just computed)")
+            show_svg(grid_svg(m, small, V={c: Vk[c] for c in order[:j]}, changed=[cur] if cur else (), uid='viw'))
+        if cur:
+            st.markdown(f"**{cell_name(m, cur)}**, V{sub(k)} = max over actions:")
+            st.markdown(breakdown(m, ex, f"V{sub(k - 1)}"))
+            st.markdown(f"V{sub(k)}{cur} = max = **{Vk[cur]:.2f}**")
+        else:
+            st.caption("▶ computes the first cell.")
+        st.caption(f"The order does not matter: every cell reads only V{sub(k - 1)} (left) and writes to a new "
+                   f"table (right), so any order gives the same V{sub(k)}.")
+
 # ---------------- Tree ----------------
 with tab_tree:
     st.subheader("The tree behind V_k: expectimax, then folded into layers")
@@ -270,14 +324,34 @@ with tab_pi:
                 on_click=lambda key=key, i=i: st.session_state.update({key: i + 1}), key="pi_next")
     o[3].button("⟲ Reset", on_click=lambda key=key: st.session_state.update({key: 0}), key="pi_reset")
     S = stages[i]
+    pcell = None
+    if S['kind'] != 'start':
+        free = [c for c in m.cells if c not in m.exits]
+        pcell = st.columns([1, 2])[0].selectbox("Show the computation for cell", free, index=free.index(m.start) if m.start in free else 0,
+                             format_func=lambda c: cell_name(m, c), key=f"pi_cell_{m.name}")
+        old = stages[i - 1]['pol'][pcell] if S['kind'] == 'improve' else S['pol'][pcell]
+        pex = m.explain(S['V'], pcell, None if S['kind'] == 'improve' else [S['pol'][pcell]])
     left, right = st.columns([3, 1])
     with left:
-        show_svg(grid_svg(m, cell_size(m), V=S['V'], pol=S['pol'], changed=S['changed'], uid='pi'))
+        show_svg(grid_svg(m, cell_size(m), V=S['V'], pol=S['pol'], changed=S['changed'], uid='pi',
+                          read=reads(pex) if pcell else ()))
         st.caption({"start": "The start policy: one arrow per cell, no values yet.",
                     "eval": "Policy evaluation: V^π(s) = Σ T·(R + γ·V^π(s′)) with the action π(s) only (no max). "
                             "Orange frames: values that changed by more than 0.005.",
                     "improve": "Policy improvement (policy extraction): in every cell, the action with the best "
                                "one-step look-ahead on V^π. Orange frames: arrows that changed."}[S['kind']])
+        if S['kind'] == 'eval':
+            st.markdown(f"**{cell_name(m, pcell)}**: only the policy's action {ARROW[old]}, no max. V^π is the final "
+                        f"result of {S['sweeps']} sweeps, so the step gives back its own value:")
+            st.markdown(breakdown(m, pex, "V^π", mark=old))
+            st.markdown(f"V^π{pcell} = **{S['V'][pcell]:.2f}** (light-blue frames: the cells it reads)")
+        elif S['kind'] == 'improve':
+            new = S['pol'][pcell]
+            st.markdown(f"**{cell_name(m, pcell)}**: every action, one step on V^π, then the best one:")
+            st.markdown(breakdown(m, pex, "V^π", mark=new))
+            ties = sum(1 for _, _, q in pex if abs(q - max(x for _, _, x in pex)) < 1e-9)
+            st.markdown(f"Was {ARROW[old]}, now **{ARROW[new]}** (changed)." if new != old else
+                        f"Stays **{ARROW[new]}**" + (": a tie keeps the current action." if ties > 1 else "."))
     with right:
         rounds = sum(1 for x in stages[1:i + 1] if x['kind'] == 'improve' and x['changed'])
         st.metric("Step", {"start": "Start", "eval": "Evaluate", "improve": "Improve"}[S['kind']])
@@ -297,12 +371,14 @@ with tab_about:
   pay their number and end the episode. Drive by hand, or watch the optimal policy act, and see how R, the noise
   and γ change the optimal policy.
 - **Value iteration (lesson 7):** V_k for k = 0, 1, 2, … with the greedy policy and the Q-values. The policy usually
-  becomes final long before the values converge.
+  becomes final long before the values converge. "Inside round k" fills V_k one cell at a time from V_{k−1}, with
+  the full calculation per action; any order gives the same V_k, because every cell reads only V_{k−1}.
 - **Tree (lesson 7):** the expectimax tree whose root value is V_k(s), built level by level (leaves, averages,
   max), and the same numbers folded into one board per V_j. The tree grows about ×10 per level, yet every level has
   at most one node per cell: Value iteration computes each cell once per layer.
 - **Policy iteration (lesson 7):** start from a fixed policy, evaluate it (no max), improve it with a one-step
-  look-ahead, and repeat until no arrow changes. Choosing "Optimal" as the start shows policy evaluation of π*.
+  look-ahead, and repeat until no arrow changes. Choosing "Optimal" as the start shows policy evaluation of π*,
+  and the calculation for any cell: the policy's action only (Evaluate), or every action and the best one (Improve).
 
 The engine is `mdp_engine.py` (standard library only); the Colab exercise HM_06 uses the same file.
 Self-check: `python3 mdp_engine.py`. This is a clean-room educational implementation with its own look.
