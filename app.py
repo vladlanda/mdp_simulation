@@ -4,6 +4,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from mdp_engine import (ARROW, LAYOUTS, GridMDP, constant_policy, greedy_policy, grid_svg, html_player, pi_stages,
                         q_values, run_episode, run_many, sample, value_iteration)
+from mdp_tree import acts_fn, build, evaluate, layers, layers_svg, sub, tree_size, tree_svg, zoom_html
 
 st.set_page_config(page_title="MDP Gridworld", page_icon="🧭", layout="wide")
 st.title("MDP Gridworld")
@@ -40,7 +41,22 @@ def show_svg(svg):
     st.html(f'<img src="data:image/svg+xml;base64,{b64}" style="max-width:min(100%,760px)">')
 
 
-tab_grid, tab_vi, tab_pi, tab_about = st.tabs(["Gridworld", "Value iteration", "Policy iteration", "About"])
+tab_grid, tab_vi, tab_tree, tab_pi, tab_about = st.tabs(["Gridworld", "Value iteration", "Tree", "Policy iteration",
+                                                        "About"])
+
+
+def bump(key, d, hi):
+    st.session_state[key] = max(0, min(hi, st.session_state[key] + d))
+
+
+def stepper(col_slider, col_prev, col_next, label, key, hi, prefix):
+    """Slider with ◀ ▶; the value resets to 0 when the key changes (new tree, new k ...)."""
+    if key not in st.session_state or st.session_state[key] > hi:
+        st.session_state[key] = 0
+    v = col_slider.slider(label, 0, hi, key=key) if hi else 0
+    col_prev.button("◀", disabled=v == 0, on_click=bump, args=(key, -1, hi), key=f"{prefix}_prev")
+    col_next.button("▶", disabled=v >= hi, on_click=bump, args=(key, 1, hi), key=f"{prefix}_next")
+    return v
 
 # ---------------- Gridworld ----------------
 with tab_grid:
@@ -165,6 +181,78 @@ with tab_vi:
         if len(Vs) - 1 > K:
             st.caption(f"The slider stops at k = {K}.")
 
+# ---------------- Tree ----------------
+with tab_tree:
+    st.subheader("The tree behind V_k: expectimax, then folded into layers")
+    m = controls("t", st.columns(4))
+    cells = [c for c in m.cells]
+    name = lambda c: f"{c} " + (f"exit {m.exits[c]:+g}" if c in m.exits else m.names.get(c, "start" if c == m.start else ""))
+    o = st.columns([1.3, 2.2, .5, .5, 1.3, 1.6])
+    root = o[0].selectbox("Root cell (col, row)", cells, format_func=name, key=f"t_root_{m.name}",
+                          index=cells.index((2, 2)) if m.name == "book" else cells.index(m.start),
+                          help="Row 0 is the bottom row.")
+    k = stepper(o[1], o[2], o[3], "k (steps left = depth)", f"t_k_{m.name}", 8, "tk")
+    view = o[4].radio("View", ["Tree", "Layers"], horizontal=True, key="t_view",
+                      help="Tree: the full expectimax tree (k ≤ 2). Layers: the same numbers, one board per V_j.")
+    ACTS = {"All actions (max)": None, "Only π*(s)": "opt", "Only East": "E", "Only North": "N"}
+    which = o[5].selectbox("Actions at a state node", list(ACTS), key="t_acts",
+                           help="All = Value iteration. One action per state = policy evaluation (no max).")
+    pol = (None if ACTS[which] is None else solve(m.name, m.noise, m.living, m.gamma)[1] if ACTS[which] == "opt"
+           else {s: ("X" if s in m.exits else ACTS[which]) for s in m.cells})
+    acts = acts_fn(m, pol)
+    n_tree = tree_size(m, root, k, acts)
+    Vs = layers(m, k, acts)
+    left, right = st.columns([4, 1])
+    if view == "Tree":
+        with left:
+            if k > 2:
+                st.info(f"With k = {k} the tree has {n_tree:,} state nodes: too many to draw. "
+                        f"Switch to **Layers**: the same values from {k} × {len(m.cells)} updates.")
+            else:
+                s1, s2, s3, s4 = st.columns([2.2, .5, .5, 1.8])
+                step = stepper(s1, s2, s3, "Build step", f"t_step_{m.name}_{root}_{k}_{which}_{m.noise}_{m.living}_{m.gamma}",
+                               2 * k + 1, "ts")
+                hl = s4.selectbox("Mark every copy of cell", [None] + cells, key=f"t_hl_{m.name}",
+                                  format_func=lambda c: "—" if c is None else name(c))
+                T = build(m, root, k, acts)
+                evaluate(m, T)
+                components.html(zoom_html(tree_svg(m, T, step, hl)), height=690)
+                lvl = ("nothing yet" if step == 0 else "the leaves: V₀ = 0" if step == 1 else
+                       f"chance nodes with {step // 2} step{'s' if step // 2 > 1 else ''} left: average over outcomes" if step % 2 == 0 else
+                       f"state nodes V{sub(step // 2)}: max over the chance nodes" if acts == m.actions else
+                       f"state nodes V{sub(step // 2)}: the policy's only action (no max)")
+                st.caption(f"**Step {step} / {2 * k + 1}: {lvl}.** Blue board = state node (the green dot is the "
+                           "agent). Circle = chance node (action), with its value in yellow. Dashed edges carry the "
+                           "probability. Q = Σ p·(R + γ·V); an exit pays R and ends (end = 0). Orange = the best action.")
+                if hl is not None:
+                    copies = []
+                    stack = [T]
+                    while stack:
+                        n = stack.pop()
+                        copies += [n] if n['kind'] == 'S' and n['s'] == hl else []
+                        stack += [c[1] if isinstance(c, tuple) else c for c in n.get('ch', [])]
+                    st.caption(f"Cell {hl} appears **{len(copies)}** times in this tree, and each copy is computed "
+                               "again. Value iteration computes it once per layer.")
+    else:
+        with left:
+            s1, s2, s3, _ = st.columns([2.2, .5, .5, 1.8])
+            step = stepper(s1, s2, s3, "Layer computed", f"t_layer_{m.name}_{root}_{k}_{which}_{m.noise}_{m.living}_{m.gamma}",
+                           k, "tl")
+            components.html(zoom_html(layers_svg(m, Vs, step, root, acts, cell=cell_size(m) * 2 // 3), height=690),
+                            height=740)
+            st.caption("One board per V_j, V₀ at the bottom. Each ▶ computes one whole layer from the layer below: "
+                       f"Bellman update on every cell. The frames show the update for {root} on the newest layer: it "
+                       "reads only its next cells one layer down (orange = the best action, with its probabilities; dashed = "
+                       "the other actions). The tree repeats the same "
+                       "cells again and again; the layers compute each cell once per k.")
+    with right:
+        st.metric(f"V{sub(k)}{root}", f"{Vs[k][root]:.2f}")
+        st.metric("Tree: state nodes", f"{n_tree:,}")
+        st.metric("Layers: Bellman updates", f"{k * len(m.cells):,}", help=f"{k} layers × {len(m.cells)} cells")
+        if which != "All actions (max)":
+            st.caption("One action per state: the tree is much narrower, and each update needs no max "
+                       "(policy evaluation).")
+
 with tab_pi:
     st.subheader("Policy iteration: evaluate, improve, repeat")
     m = controls("p", st.columns(4))
@@ -210,6 +298,9 @@ with tab_about:
   and γ change the optimal policy.
 - **Value iteration (lesson 7):** V_k for k = 0, 1, 2, … with the greedy policy and the Q-values. The policy usually
   becomes final long before the values converge.
+- **Tree (lesson 7):** the expectimax tree whose root value is V_k(s), built level by level (leaves, averages,
+  max), and the same numbers folded into one board per V_j. The tree grows about ×10 per level, yet every level has
+  at most one node per cell: Value iteration computes each cell once per layer.
 - **Policy iteration (lesson 7):** start from a fixed policy, evaluate it (no max), improve it with a one-step
   look-ahead, and repeat until no arrow changes. Choosing "Optimal" as the start shows policy evaluation of π*.
 
