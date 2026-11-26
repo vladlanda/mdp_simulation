@@ -49,14 +49,42 @@ for name in ('bridge', 'cliff', 'discount'):
     m = me.GridMDP(name)
     OTHER[name] = me.greedy_policy(m, me.value_iteration(m)[-1])
 SIM = {n: round(me.run_many(BOOK, EAST, n)['avg_return'], 3) for n in (10, 100, 1000)}
+GAP_STAR_E = round(max(abs(VSTAR[s] - BOOK.q(VSTAR, s, EAST[s])) for s in BOOK.cells), 9)   # V* is not V^East
+assert round(REF_VE[(2, 1)], 2) == -0.69 and GAP_STAR_E > 0.1
+# the race car (lesson 6/7): reference table, and its policies evaluated by solving the linear system
+RACE = {('cool', 'slow'): [(1.0, 'cool', 1)], ('cool', 'fast'): [(0.5, 'cool', 2), (0.5, 'warm', 2)],
+        ('warm', 'slow'): [(0.5, 'cool', 1), (0.5, 'warm', 1)], ('warm', 'fast'): [(1.0, 'over', -10)]}
+
+
+def race_eval(pol, g=0.9):   # two unknowns: V(c), V(h); 'over' = 0
+    import numpy as np
+    S = sorted(pol); ix = {s: i for i, s in enumerate(S)}
+    A, b = np.eye(len(S)), np.zeros(len(S))
+    for s in S:
+        for p, n, rw in RACE[(s, pol[s])]:
+            b[ix[s]] += p * rw
+            if n in ix:
+                A[ix[s], ix[n]] -= g * p
+    x = np.linalg.solve(A, b)
+    return {s: round(float(x[ix[s]]), 9) for s in S}
+
+
+RACE_POL = {'slow': {'cool': 'slow', 'warm': 'slow'}, 'good': {'cool': 'fast', 'warm': 'slow'},
+            'fast': {'cool': 'fast', 'warm': 'fast'}}
+RACE_V = {k: race_eval(v) for k, v in RACE_POL.items()}
+RACE_Q_SLOW = {sa: round(sum(p * (rw + 0.9 * RACE_V['slow'].get(n, 0.0)) for p, n, rw in outs), 9)
+               for sa, outs in RACE.items()}
+assert RACE_V['good'] == {'cool': 15.5, 'warm': 14.5} and RACE_V['slow'] == {'cool': 10.0, 'warm': 10.0}
+assert RACE_Q_SLOW == {('cool', 'slow'): 10.0, ('cool', 'fast'): 11.0, ('warm', 'slow'): 10.0, ('warm', 'fast'): -10.0}
 assert round(REF_Q[((2, 2), 'E')], 2) == 0.85 and len(VK) - 1 == 32 and CH == {'E': [6, 2, 0], 'N': [5, 1, 0]}
 if '--numbers' in sys.argv:
-    print('V^E start', REF_VE[(0, 0)], 'sim', SIM, 'LIFE_Q', LIFE_Q, 'CH', CH)
+    print('V^E start', REF_VE[(0, 0)], 'sim', SIM, 'LIFE_Q', LIFE_Q, 'CH', CH, 'gap V* East', GAP_STAR_E, 'race', RACE_V)
     sys.exit()
 
 SETUP = r'''#@title 🔧 תא הגדרות: הריצו אותו ראשון (אין צורך לקרוא את הקוד)
 import json, math, random, signal
 from statistics import mean
+import numpy as np
 from IPython.display import HTML, display
 
 # ============================================================
@@ -125,6 +153,11 @@ REF_VE = ''' + repr(REF_VE) + r'''
 REF_VN = ''' + repr(REF_VN) + r'''
 REF_CH = ''' + repr(CH) + r'''
 REF_OTHER = ''' + repr(OTHER) + r'''
+GAP_STAR_E = ''' + repr(GAP_STAR_E) + r'''
+REF_RACE = ''' + repr(RACE) + r'''
+RACE_POL = ''' + repr(RACE_POL) + r'''
+RACE_V = ''' + repr(RACE_V) + r'''
+RACE_Q_SLOW = ''' + repr(RACE_Q_SLOW) + r'''
 
 # ============================================================
 # תשתית בדיקות
@@ -258,6 +291,62 @@ def check_evaluate(fn):
             print('   רמז: כמו value_iteration, אבל בלי max: רק q_value של הפעולה policy[s].'); ok = False; break
     _finish('evaluate_policy', ok)
 
+def check_bellman_gap(fn):
+    m = GridMDP('book')
+    east = constant_policy(m, 'E')
+    ok = True
+    for label, pol, V, exp in [('V^East, always East', east, REF_VE, 0.0), ('V*, optimal', REF_PSTAR, VSTAR, 0.0),
+                               ('V*, always East', east, VSTAR, GAP_STAR_E)]:
+        status, got = _call(fn, (m, pol, V))
+        if status != 'ok':
+            _report_problem(status, got); ok = False; break
+        if not _close(got, exp, 1e-6):
+            print(f'❌ [{label}] הפער הגדול ביותר צריך להיות {exp:.4f}, קיבלנו {got!r}.')
+            print('   רמז: לכל משבצת s, הפער הוא |V[s] − q_value(mdp, V, s, policy[s])|. מחזירים את המקסימום.')
+            ok = False; break
+    _finish('bellman_gap', ok)
+
+def check_race(T):
+    ok = isinstance(T, dict) and set(T) == set(REF_RACE)
+    if not ok:
+        print(f'❌ צריך ארבעה זוגות (מצב, פעולה): {sorted(REF_RACE)}. קיבלנו {sorted(T) if isinstance(T, dict) else T!r}.')
+    else:
+        for sa, outs in REF_RACE.items():
+            if sorted(T[sa]) != sorted(outs):
+                print(f'❌ {sa}: צריך {outs}, קיבלנו {T[sa]}.'); ok = False; break
+    _finish('race', ok)
+
+def check_linear(fn):
+    ok = True
+    for name, pol in RACE_POL.items():
+        status, V = _call(fn, (REF_RACE, pol, 0.9))
+        if status != 'ok':
+            _report_problem(status, V); ok = False; break
+        bad = _vdiff(V, RACE_V[name], 1e-6)
+        if bad:
+            print(f'❌ [{name}: {pol}] במצב {bad}: קיבלנו {V.get(bad) if isinstance(V, dict) else V!r}, '
+                  f'צריך {RACE_V[name][bad]:.4f}.')
+            print('   רמז: V(s) − γ·Σ p·V(next) = Σ p·r. התגמול נכנס ל-b, וכל מעבר למצב שהוא נעלם מוריד γ·p מ-A.')
+            ok = False; break
+    _finish('evaluate_linear', ok)
+
+def check_dict_extract(q_fn, ext_fn):
+    ok = True
+    status, Q = _call(q_fn, (REF_RACE, RACE_V['slow'], 0.9))
+    if status != 'ok':
+        _report_problem(status, Q); ok = False
+    elif not isinstance(Q, dict) or any(not _close(Q.get(sa), v) for sa, v in RACE_Q_SLOW.items()):
+        print(f'❌ dict_q על הערכים של "תמיד לאט" (10 ו-10) צריכה לתת {RACE_Q_SLOW}. קיבלנו {Q!r}.')
+        print("   רמז: Σ p · (r + γ · V[next]), ו-V של 'over' הוא 0 (הוא לא מופיע ב-V)."); ok = False
+    if ok:
+        for name in ('slow', 'good'):
+            status, pol = _call(ext_fn, (REF_RACE, RACE_V[name], 0.9))
+            if status != 'ok':
+                _report_problem(status, pol); ok = False; break
+            if pol != RACE_POL['good']:
+                print(f'❌ חילוץ מתוך הערכים של "{name}" צריך לתת {RACE_POL["good"]}, קיבלנו {pol!r}.'); ok = False; break
+    _finish('dict_extract', ok)
+
 def check_policy_iteration(fn):
     ok = True
     for start, exp in [('E', REF_CH['E']), ('N', REF_CH['N'])]:
@@ -281,23 +370,6 @@ def check_policy_iteration(fn):
                 print(f'❌ על הלוח {name} המדיניות הסופית שונה מזו של Value Iteration.'); ok = False; break
     _finish('policy_iteration', ok)
 
-def check_race(T):
-    ok = True
-    try:
-        Vs = dict_value_iteration(T, 1.0, 3)
-        want = [{'cool': 0, 'warm': 0, 'over': 0}, {'cool': 2, 'warm': 1, 'over': 0},
-                {'cool': 3.5, 'warm': 2.5, 'over': 0}, {'cool': 5, 'warm': 4, 'over': 0}]
-        for k, w in enumerate(want):
-            if any(not _close(Vs[k][s], v) for s, v in w.items()):
-                print(f'❌ בלי היוון, V_{k} צריך להיות {w}, קיבלנו {Vs[k]}.'); ok = False; break
-        if ok:
-            V = dict_value_iteration(T, 0.9)[-1]
-            if not (_close(V['cool'], 15.5, 1e-4) and _close(V['warm'], 14.5, 1e-4)):
-                print(f'❌ עם γ = 0.9 הערכים צריכים להתכנס ל-cool 15.5 ו-warm 14.5. קיבלנו {V}.'); ok = False
-    except Exception as e:
-        _report_problem('error', e); ok = False
-    _finish('race (bonus)', ok)
-
 def ready(*names):
     missing = [n for n in names if not RESULTS.get(n)]
     if missing:
@@ -305,7 +377,8 @@ def ready(*names):
     return not missing
 
 def final_report():
-    for n in ['q_value', 'value_iteration', 'extract', 'evaluate_policy', 'policy_iteration', 'race (bonus)']:
+    for n in ['q_value', 'value_iteration', 'extract', 'evaluate_policy', 'bellman_gap', 'policy_iteration', 'race',
+              'evaluate_linear', 'dict_extract']:
         mark = {True: '✅', False: '❌'}.get(RESULTS.get(n), '⬜ (לא נבדק)')
         print(f'{mark}  {n}')
 '''
@@ -467,6 +540,88 @@ RACE = {
 }
 ''')
 
+TASK_GAP = ('''def bellman_gap(mdp, policy, V):
+    """בדיקה: האם V הוא הערך של policy? מציבים את V באגף ימין של משוואת בלמן של המדיניות,
+    ומחזירים את הפער הגדול ביותר בין אגף שמאל (V[s]) לאגף ימין (q_value של הפעולה policy[s])."""
+    gap = 0.0
+    # TODO: לכל s ב-mdp.cells:  gap = max(gap, |V[s] − q_value(mdp, V, s, policy[s])|)
+    return gap
+''', '''def bellman_gap(mdp, policy, V):
+    """בדיקה: האם V הוא הערך של policy? מציבים את V באגף ימין של משוואת בלמן של המדיניות,
+    ומחזירים את הפער הגדול ביותר בין אגף שמאל (V[s]) לאגף ימין (q_value של הפעולה policy[s])."""
+    gap = 0.0
+    for s in mdp.cells:
+        gap = max(gap, abs(V[s] - q_value(mdp, V, s, policy[s])))
+    return gap
+''')
+
+TASK_LIN = ('''def evaluate_linear(T, policy, gamma):
+    """הערכת מדיניות בדרך 2: פותרים את מערכת המשוואות בבת אחת.
+    לכל מצב s שיש לו פעולה:  V(s) = Σ p · (r + γ · V(next)),  ובצורה של A·x = b:
+        V(s) − γ · Σ p · V(next) = Σ p · r
+    מצב בלי פעולות ('over') שווה 0, ולכן הוא לא נעלם. מחזירה מילון {מצב: ערך}."""
+    states = sorted(policy)                      # הנעלמים: המצבים שיש להם פעולה
+    idx = {s: i for i, s in enumerate(states)}
+    A = np.eye(len(states))                      # ה-V(s) שבאגף שמאל
+    b = np.zeros(len(states))
+    for s in states:
+        for p, nxt, r in T[(s, policy[s])]:
+            # TODO: התגמול עובר לאגף ימין:  b[idx[s]] += p * r
+            # TODO: אם nxt הוא נעלם (nxt in idx), האיבר γ·p·V(nxt) עובר לאגף שמאל:  A[idx[s], idx[nxt]] -= gamma * p
+            pass
+    x = np.linalg.solve(A, b)
+    return {s: float(x[idx[s]]) for s in states}
+''', '''def evaluate_linear(T, policy, gamma):
+    """הערכת מדיניות בדרך 2: פותרים את מערכת המשוואות בבת אחת.
+    לכל מצב s שיש לו פעולה:  V(s) = Σ p · (r + γ · V(next)),  ובצורה של A·x = b:
+        V(s) − γ · Σ p · V(next) = Σ p · r
+    מצב בלי פעולות ('over') שווה 0, ולכן הוא לא נעלם. מחזירה מילון {מצב: ערך}."""
+    states = sorted(policy)                      # הנעלמים: המצבים שיש להם פעולה
+    idx = {s: i for i, s in enumerate(states)}
+    A = np.eye(len(states))                      # ה-V(s) שבאגף שמאל
+    b = np.zeros(len(states))
+    for s in states:
+        for p, nxt, r in T[(s, policy[s])]:
+            b[idx[s]] += p * r
+            if nxt in idx:
+                A[idx[s], idx[nxt]] -= gamma * p
+    x = np.linalg.solve(A, b)
+    return {s: float(x[idx[s]]) for s in states}
+''')
+
+TASK_DQ = ('''def dict_q(T, V, gamma):
+    """ערכי Q מתוך V כלשהו: Q[(s, a)] = Σ p · (r + γ · V(next)). מצב שלא מופיע ב-V (כמו 'over') שווה 0."""
+    Q = {}
+    for (s, a), outs in T.items():
+        # TODO: Q[(s, a)] = סכום על (p, nxt, r) ב-outs של  p * (r + gamma * V.get(nxt, 0.0))
+        pass
+    return Q
+
+
+def dict_extract(T, V, gamma):
+    """חילוץ מדיניות מתוך V כלשהו (לא בהכרח V*): בכל מצב, הפעולה עם Q הגבוה ביותר."""
+    Q = dict_q(T, V, gamma)
+    policy = {}
+    # TODO: לכל (s, a) ב-Q: אם s עוד לא ב-policy, או ש-Q[(s, a)] גדול מ-Q[(s, policy[s])], אז policy[s] = a
+    return policy
+''', '''def dict_q(T, V, gamma):
+    """ערכי Q מתוך V כלשהו: Q[(s, a)] = Σ p · (r + γ · V(next)). מצב שלא מופיע ב-V (כמו 'over') שווה 0."""
+    Q = {}
+    for (s, a), outs in T.items():
+        Q[(s, a)] = sum(p * (r + gamma * V.get(nxt, 0.0)) for p, nxt, r in outs)
+    return Q
+
+
+def dict_extract(T, V, gamma):
+    """חילוץ מדיניות מתוך V כלשהו (לא בהכרח V*): בכל מצב, הפעולה עם Q הגבוה ביותר."""
+    Q = dict_q(T, V, gamma)
+    policy = {}
+    for (s, a) in Q:
+        if s not in policy or Q[(s, a)] > Q[(s, policy[s])]:
+            policy[s] = a
+    return policy
+''')
+
 DICT_VI = '''def dict_value_iteration(T, gamma, k=None, tol=1e-9, k_max=1000):
     """Value Iteration על MDP שמוגדר כמילון T[(state, action)] = [(p, next, reward), ...] (מוכנה, אין מה להשלים).
     מצב בלי פעולות (כמו 'over') הוא מצב סיום, וערכו 0."""
@@ -500,9 +655,10 @@ def build(solution):
 1. **צעד אחד של בלמן:** ערך Q של פעולה, מתוך ערכים של המצבים הבאים.
 2. **Value Iteration:** הערכים V₀, V₁, V₂, … עד שהם מתכנסים.
 3. **חילוץ מדיניות:** מערכים לפעולות, מתוך V ומתוך Q.
-4. **הערכת מדיניות:** כמה שווה מדיניות נתונה, בדיוק ולא בסימולציה.
+4. **הערכת מדיניות:** כמה שווה מדיניות נתונה, בדיוק ולא בסימולציה, ואיך בודקים שהערכים נכונים.
 5. **Policy Iteration:** הערכה ושיפור לסירוגין.
-6. ✨ **בונוס:** המכונית משיעור 6, כ-MDP קטן.
+6. **המכונית:** הערכת מדיניות בפתרון מערכת משוואות, וחילוץ מדיניות מכל V.
+7. ✨ **בונוס:** המכונית בלי היוון.
 
 **איך עובדים:** הריצו קודם את תא ההגדרות. בכל ✏️ משימה השלימו את ה-`TODO`, והריצו את תא הבדיקה שאחריה. ב-❓ שאלות כתבו תשובה בתא ✍️ שאחריהן.
 
@@ -622,6 +778,28 @@ side_by_side(('always East', mdp, east, VE), ('optimal π*', mdp, REF_PSTAR, VST
 print(f'exact value at the start (0, 0): {VE[(0, 0)]:.3f}')
 for n in [10, 100, 1000]:
     print(f'simulation, {n:4d} episodes: {run_many(mdp, east, n)["avg_return"]:.3f}')''', 'evaluate_policy'),
+        md('''
+**בדיקה: הערכים מקיימים את המשוואה.** איך יודעים ש-V הוא באמת הערך של מדיניות? מציבים אותו באגף ימין של משוואת בלמן של המדיניות. אם יוצא שוב V, הערכים נכונים. בשקף בדקנו כך את המשבצת שליד הבור ב"תמיד מזרחה":
+
+<div dir="ltr">
+
+0.9 · [0.8 · (−1) + 0.1 · 0.72 + 0.1 · (−0.44)] = −0.69
+
+</div>
+
+### ✏️ משימה 4ב: ‏bellman_gap
+'''),
+        c(TASK_GAP),
+        code('check_bellman_gap(bellman_gap)'),
+        guarded('''mdp = GridMDP('book')
+east = constant_policy(mdp, 'E')
+VE = evaluate_policy(mdp, east)[-1]
+near = (2, 1)
+terms = ' + '.join(f'{p:g} · ({"exit" if n is None else f"{VE[n]:.2f}"})' for p, d, n in mdp.outcomes(near, 'E'))
+print(f'next to the pit, East: {mdp.gamma} · [{terms}] = {q_value(mdp, VE, near, "E"):.2f}   (V^East there: {VE[near]:.2f})')
+print(f'gap of V^East under always East: {bellman_gap(mdp, east, VE):.6f}')
+print(f'gap of V*     under always East: {bellman_gap(mdp, east, VSTAR):.4f}   → V* is not the value of always East')''',
+                'evaluate_policy', 'bellman_gap'),
         # ---------------- part 5 ----------------
         md('''
 ## חלק 5: ‏Policy Iteration
@@ -667,39 +845,92 @@ print('policy iteration == value iteration:', pols[-1] == extract_policy(mdp, va
         ans('q3'),
         # ---------------- part 6 ----------------
         md('''
-## חלק 6: ✨ בונוס: המכונית
+## חלק 6: המכונית
 
-ה-MDP של המכונית משיעור 6 הוא לא לוח, אלא מילון קטן של מעברים. `dict_value_iteration` (מוכנה) מריצה עליו Value Iteration. השלימו את המעברים.
+ה-MDP של המכונית משיעור 6 הוא לא לוח, אלא מילון קטן של מעברים. השלימו את המעברים:
 
 | מצב | פעולה | תוצאה |
 |---|---|---|
-| קר | לאט | נשארים קרים, ‎+1 |
-| קר | מהר | חצי קר, חצי חם, ‎+2 |
-| חם | לאט | חצי קר, חצי חם, ‎+1 |
-| חם | מהר | התחממות יתר, ‎−10 |
+| קר | לאט | נשארים קרים, תגמול 1 |
+| קר | מהר | חצי קר, חצי חם, תגמול 2 |
+| חם | לאט | חצי קר, חצי חם, תגמול 1 |
+| חם | מהר | התחממות יתר, תגמול מינוס 10 |
 '''),
-        code(DICT_VI),
         c(TASK6),
         code('''check_race(RACE)'''),
+        code(DICT_VI),
+        md('''
+### הערכת מדיניות, דרך 2: מערכת משוואות
+
+בלי max, משוואת בלמן של מדיניות היא **לינארית**: כל V(s) הוא מספר, ועוד מקדמים כפול ערכים של מצבים אחרים. יש משוואה לכל מצב, ונעלם לכל מצב. במדיניות "מהר כשקר, לאט כשחם", עם היוון 0.9 (c = קר, h = חם):
+
+<div dir="ltr">
+
+V(c) = 2 + 0.9 · (0.5 · V(c) + 0.5 · V(h))
+
+V(h) = 1 + 0.9 · (0.5 · V(c) + 0.5 · V(h))
+
+</div>
+
+בשקף פתרנו ביד, וקיבלנו 15.5 בקר ו-14.5 בחם. כאן בונים את המערכת בצורה A·x = b, ונותנים ל-`np.linalg.solve` לפתור. זו אותה תוצאה כמו בעדכון החוזר, בלי סבבים.
+
+### ✏️ משימה 6: ‏evaluate_linear
+'''),
+        c(TASK_LIN),
+        code('check_linear(evaluate_linear)'),
+        md('''
+### חילוץ מדיניות מכל V
+
+חילוץ מדיניות עובד על **כל** V, לא רק על V\\*. אם V הם הערכים של מדיניות אחרת, מקבלים מדיניות אחרת, ולפעמים טובה יותר. זה הרעיון של Policy Iteration.
+
+### ✏️ משימה 7: ‏dict_q ו-dict_extract
+'''),
+        c(TASK_DQ),
+        code('check_dict_extract(dict_q, dict_extract)'),
+        md('''
+התא הבא עושה סבב אחד של Policy Iteration על המכונית: מעריך את "תמיד לאט", מחלץ מדיניות מהערכים שלה, ומעריך את המדיניות החדשה.
+'''),
+        guarded('''slow = {'cool': 'slow', 'warm': 'slow'}
+V_slow = evaluate_linear(RACE, slow, 0.9)
+print('always slow:', {s: round(v, 2) for s, v in V_slow.items()})
+print('Q from those values:', {sa: round(q, 2) for sa, q in dict_q(RACE, V_slow, 0.9).items()})
+new = dict_extract(RACE, V_slow, 0.9)
+print('extracted policy:', new)
+print('its values:', {s: round(v, 2) for s, v in evaluate_linear(RACE, new, 0.9).items()})
+print('value iteration (gamma 0.9):', {s: round(v, 2) for s, v in dict_value_iteration(RACE, 0.9)[-1].items()})''',
+                'race', 'evaluate_linear', 'dict_extract'),
+        md('''
+### ❓ שאלה 4: שיפור אחד
+
+1. מה החילוץ מתוך הערכים של "תמיד לאט" שינה, ולמה? (היעזרו בערכי ה-Q שהודפסו: בקר, 11 מול 10.)
+2. המדיניות החדשה שווה 15.5 ו-14.5, כמו V\\* מ-Value Iteration. מה היה קורה אם היינו מחלצים שוב מתוך הערכים החדשים?
+'''),
+        ans('q4'),
+        # ---------------- part 7 ----------------
+        md('''
+## חלק 7: ✨ בונוס: בלי היוון
+
+`dict_value_iteration` (מחלק 6) מריצה Value Iteration על המכונית, פעם בלי היוון (γ = 1) ופעם עם היוון 0.9.
+'''),
         guarded('''for gamma in [1.0, 0.9]:
     Vs = dict_value_iteration(RACE, gamma, 5)
     print(f'gamma = {gamma}:', ' | '.join(f"V{k}: cool {V['cool']:.2f}, warm {V['warm']:.2f}" for k, V in enumerate(Vs)))
 print('gamma = 0.9, converged:', {s: round(v, 2) for s, v in dict_value_iteration(RACE, 0.9)[-1].items()})''',
-                'race (bonus)'),
+                'race'),
         md('''
-### ❓ שאלה 4: ✨ בלי היוון
+### ❓ שאלה 5: ✨ בלי היוון
 
 1. מה קורה ל-V<sub>k</sub> של המכונית בלי היוון (γ = 1), כש-k גדל? למה?
 2. למה עם γ = 0.9 הערכים מתכנסים? מה זה אומר על הצורך ב-γ קטן מ-1 (או בסוף ידוע מראש)?
 '''),
-        ans('q4'),
+        ans('q5'),
         md('''
 ## סיכום והגשה
 
 - **משוואות בלמן:** כל ערך הוא צעד אחד של Expectimax מעל ערכים של המצבים הבאים (`q_value`).
 - **Value Iteration:** בונים את V₀, V₁, … עד שמתכנס. המדיניות מתייצבת הרבה לפני הערכים.
 - **חילוץ מדיניות:** argmax של צעד אחד. מתוך Q זה הכי קל.
-- **הערכת מדיניות:** אותו חישוב בלי max. מדויק, ולא ממוצע של ריצות.
+- **הערכת מדיניות:** אותו חישוב בלי max, מדויק ולא ממוצע של ריצות. שתי דרכים: עדכון חוזר, או פתרון מערכת משוואות לינארית. בודקים ערכים בהצבה במשוואה.
 - **Policy Iteration:** הערכה ושיפור לסירוגין, עד שהמדיניות לא משתנה. אותה תוצאה כמו Value Iteration.
 
 הריצו את התא האחרון. לפני ההגשה ודאו שכל השורות מסומנות ✅ (הבונוס לא חובה), ושכל התשובות ✍️ מלאות.
