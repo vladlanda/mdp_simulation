@@ -3,7 +3,7 @@ import random
 import streamlit as st
 import streamlit.components.v1 as components
 from mdp_engine import (ARROW, LAYOUTS, GridMDP, constant_policy, greedy_policy, grid_svg, html_player, pi_stages,
-                        q_values, run_episode, run_many, sample, value_iteration)
+                        policy_evaluation, q_values, run_episode, run_many, sample, value_iteration)
 from mdp_tree import acts_fn, build, evaluate, layers, layers_svg, sub, tree_size, tree_svg, zoom_html
 
 st.set_page_config(page_title="MDP Gridworld", page_icon="🧭", layout="wide")
@@ -79,6 +79,20 @@ def stepper(col_slider, col_prev, col_next, label, key, hi, prefix):
     col_prev.button("◀", disabled=v == 0, on_click=bump, args=(key, -1, hi), key=f"{prefix}_prev")
     col_next.button("▶", disabled=v >= hi, on_click=bump, args=(key, 1, hi), key=f"{prefix}_next")
     return v
+
+
+def cell_walk(m, ckey, prefix):
+    """'Cells computed' stepper (engine order) with a jump box. Returns (cells done, current cell or None)."""
+    order = m.cells
+    c1, c2, c3, c4 = st.columns([3, .5, .5, 2])
+    j = stepper(c1, c2, c3, "Cells computed (engine order: row by row from the bottom-left)", ckey, len(order), prefix)
+
+    def jump(ckey, jkey):
+        st.session_state[ckey] = order.index(st.session_state[jkey]) + 1
+    jkey = f"{prefix}_jump_{ckey}_{j}"  # new key per position, so the box follows ◀ ▶
+    c4.selectbox("Jump to cell", order, index=max(j - 1, 0), format_func=lambda c: cell_name(m, c),
+                 key=jkey, on_change=jump, args=(ckey, jkey))
+    return j, (order[j - 1] if j else None)
 
 # ---------------- Gridworld ----------------
 with tab_grid:
@@ -206,17 +220,7 @@ with tab_vi:
     if k:
         st.markdown(f"#### Inside round {k}: how each V{sub(k)}(s) is computed")
         order = m.cells
-        ckey = f"vi_cell_{m.name}_{m.noise}_{m.living}_{m.gamma}_{k}"
-        c1, c2, c3, c4 = st.columns([3, .5, .5, 2])
-        j = stepper(c1, c2, c3, "Cells computed (engine order: row by row from the bottom-left)", ckey, len(order),
-                    "vi_cell")
-
-        def jump(ckey, jkey):
-            st.session_state[ckey] = order.index(st.session_state[jkey]) + 1
-        jkey = f"vi_jump_{ckey}_{j}"  # new key per position, so the box follows ◀ ▶
-        c4.selectbox("Jump to cell", order, index=max(j - 1, 0), format_func=lambda c: cell_name(m, c),
-                     key=jkey, on_change=jump, args=(ckey, jkey))
-        cur = order[j - 1] if j else None
+        j, cur = cell_walk(m, f"vi_cell_{m.name}_{m.noise}_{m.living}_{m.gamma}_{k}", "vi_cell")
         ex = m.explain(Vs[k - 1], cur) if cur else None
         small = max(45, cell_size(m) * 3 // 5)
         b1, bt, b2 = st.columns([1, 1.3, 1])
@@ -328,35 +332,14 @@ with tab_pi:
                 on_click=lambda key=key, i=i: st.session_state.update({key: i + 1}), key="pi_next")
     o[3].button("⟲ Reset", on_click=lambda key=key: st.session_state.update({key: 0}), key="pi_reset")
     S = stages[i]
-    pcell = None
-    if S['kind'] != 'start':
-        free = [c for c in m.cells if c not in m.exits]
-        pcell = st.columns([1, 2])[0].selectbox("Show the computation for cell", free, index=free.index(m.start) if m.start in free else 0,
-                             format_func=lambda c: cell_name(m, c), key=f"pi_cell_{m.name}")
-        old = stages[i - 1]['pol'][pcell] if S['kind'] == 'improve' else S['pol'][pcell]
-        pex = m.explain(S['V'], pcell, None if S['kind'] == 'improve' else [S['pol'][pcell]])
-    left, mid, right = st.columns([2.2, 1.6, 1])
+    left, right = st.columns([3, 1])
     with left:
-        show_svg(grid_svg(m, cell_size(m), V=S['V'], pol=S['pol'], changed=S['changed'], uid='pi',
-                          read=reads(pex) if pcell else ()))
+        show_svg(grid_svg(m, cell_size(m), V=S['V'], pol=S['pol'], changed=S['changed'], uid='pi'))
         st.caption({"start": "The start policy: one arrow per cell, no values yet.",
                     "eval": "Policy evaluation: V^π(s) = Σ T·(R + γ·V^π(s′)) with the action π(s) only (no max). "
                             "Orange frames: values that changed by more than 0.005.",
                     "improve": "Policy improvement (policy extraction): in every cell, the action with the best "
                                "one-step look-ahead on V^π. Orange frames: arrows that changed."}[S['kind']])
-    with mid:
-        if S['kind'] == 'eval':
-            st.markdown(f"**{cell_name(m, pcell)}**: only the policy's action {ARROW[old]}, no max. V^π is the final "
-                        f"result of {S['sweeps']} sweeps, so the step gives back its own value:")
-            st.markdown(breakdown(m, pex, "V^π", mark=old))
-            st.markdown(f"V^π{pcell} = **{S['V'][pcell]:.2f}** (light-blue frames: the cells it reads)")
-        elif S['kind'] == 'improve':
-            new = S['pol'][pcell]
-            st.markdown(f"**{cell_name(m, pcell)}**: every action, one step on V^π, then the best one:")
-            st.markdown(breakdown(m, pex, "V^π", mark=new))
-            ties = sum(1 for _, _, q in pex if abs(q - max(x for _, _, x in pex)) < 1e-9)
-            st.markdown(f"Was {ARROW[old]}, now **{ARROW[new]}** (changed)." if new != old else
-                        f"Stays **{ARROW[new]}**" + (": a tie keeps the current action." if ties > 1 else "."))
     with right:
         rounds = sum(1 for x in stages[1:i + 1] if x['kind'] == 'improve' and x['changed'])
         st.metric("Step", {"start": "Start", "eval": "Evaluate", "improve": "Improve"}[S['kind']])
@@ -367,6 +350,65 @@ with tab_pi:
             st.metric("Cells changed", len(S['changed']))
         if nxt is None:
             st.success("No arrow changed: this is the optimal policy π*.")
+
+    small = max(45, cell_size(m) * 3 // 5)
+    if S['kind'] == 'eval':
+        pol = S['pol']
+        Vs = policy_evaluation(m, pol)
+        n = len(Vs) - 1
+        st.markdown(f"#### Inside Evaluate: {n} sweeps over the board, V^π without max")
+        e = st.columns([3, .5, .5, 2])
+        sw = stepper(e[0], e[1], e[2], "Sweep (V^π₀ = 0 everywhere; each sweep reads only the one before it)",
+                     f"pi_sw_{key}_{i}", n, "pi_sw")
+        if sw:
+            j, cur = cell_walk(m, f"pi_ec_{key}_{i}_{sw}", "pi_ec")
+            ex = m.explain(Vs[sw - 1], cur, [pol[cur]]) if cur else None
+            b1, bt, b2 = st.columns([1, 1.3, 1])
+            with b1:
+                st.markdown(f"**Read only: V^π{sub(sw - 1)}** (light-blue frames: the cells this step reads)")
+                show_svg(grid_svg(m, small, V=Vs[sw - 1], pol=pol, read=reads(ex) if ex else (), uid='per'))
+            with bt:
+                if cur:
+                    st.markdown(f"**{cell_name(m, cur)}**: only the policy's action {ARROW[pol[cur]]}, no max:")
+                    st.markdown(breakdown(m, ex, f"V^π{sub(sw - 1)}", mark=pol[cur]))
+                    st.markdown(f"V^π{sub(sw)}{cur} = **{Vs[sw][cur]:.2f}**")
+                else:
+                    st.caption("▶ computes the first cell of this sweep.")
+            with b2:
+                st.markdown(f"**Written: V^π{sub(sw)}** (orange: the cell just computed)")
+                show_svg(grid_svg(m, small, V={c: Vs[sw][c] for c in m.cells[:j]}, pol=pol,
+                                  changed=[cur] if cur else (), uid='pew'))
+            ch = max(abs(Vs[sw][s] - Vs[sw - 1][s]) for s in m.cells)
+            st.caption(f"Like a Value iteration round, but each cell has one action, so there is no max. Largest "
+                       f"change in this sweep: {ch:.4f}. The sweeps stop when it falls below 10⁻⁹ (after {n}); the "
+                       "board above is the last sweep.")
+        else:
+            st.caption("▶ starts sweep 1.")
+    elif S['kind'] == 'improve':
+        old, new = stages[i - 1]['pol'], S['pol']
+        st.markdown("#### Inside Improve: one look-ahead per cell on V^π")
+        j, cur = cell_walk(m, f"pi_ic_{key}_{i}", "pi_ic")
+        ex = m.explain(S['V'], cur) if cur else None
+        b1, bt, b2 = st.columns([1, 1.3, 1])
+        with b1:
+            st.markdown("**Read only: V^π** (light-blue frames: the cells this step reads)")
+            show_svg(grid_svg(m, small, V=S['V'], pol=old, read=reads(ex) if ex else (), uid='pir'))
+        with bt:
+            if cur:
+                st.markdown(f"**{cell_name(m, cur)}**: every action, one step on V^π, then the best one:")
+                st.markdown(breakdown(m, ex, "V^π", mark=new[cur]))
+                ties = sum(1 for _, _, q in ex if abs(q - max(x for _, _, x in ex)) < 1e-9)
+                st.markdown(f"Was {ARROW[old[cur]]}, now **{ARROW[new[cur]]}** (changed)." if new[cur] != old[cur] else
+                            f"Stays **{ARROW[new[cur]]}**" + (": a tie keeps the current action." if ties > 1 else "."))
+            else:
+                st.caption("▶ computes the first cell.")
+        with b2:
+            st.markdown("**Written: the new policy** (orange: the cell just decided)")
+            done = set(m.cells[:j])
+            show_svg(grid_svg(m, small, pol={c: (new if c in done else old)[c] for c in m.cells},
+                              changed=[cur] if cur else (), uid='piw'))
+        st.caption("V^π stays fixed during the whole step, so the order of the cells does not matter. Cells not "
+                   "reached yet still show the old arrow.")
 
 with tab_about:
     st.subheader("What this demonstrates")
@@ -383,7 +425,8 @@ with tab_about:
   at most one node per cell: Value iteration computes each cell once per layer.
 - **Policy iteration (lesson 7):** start from a fixed policy, evaluate it (no max), improve it with a one-step
   look-ahead, and repeat until no arrow changes. Choosing "Optimal" as the start shows policy evaluation of π*,
-  and the calculation for any cell: the policy's action only (Evaluate), or every action and the best one (Improve).
+  and what happens inside each step, cell by cell: Evaluate runs sweeps without max (each reads only the sweep
+  before it); Improve reads the fixed V^π and picks the best action in every cell.
 
 The engine is `mdp_engine.py` (standard library only); the Colab exercise HM_06 uses the same file.
 Self-check: `python3 mdp_engine.py`. This is a clean-room educational implementation with its own look.

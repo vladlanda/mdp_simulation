@@ -40,7 +40,7 @@ uv run streamlit run app.py
 | Corridor (lesson 7 worked example) | corridor · Value iteration / Tree tab · root B | V_k for (A, B): (0, 0), (0, 0), (0, 0.72), (0.52, 0.85), (0.71, 0.87) for k = 0–4, converges at k = 17 to (0.771, 0.878) · full tree from B: 17 / 53 / 161 state nodes for k = 2–4 |
 | Tree (lesson 7) | Tree tab · book · root (2, 2) | k = 2: V₂ = 0.72 (→ 0.72, ↑ 0.09, ↓ 0.09, ← 0) · state nodes in the full tree: 13 / 115 / 1,063 / 10,075 for k = 1–4 (from the start cell: 11 / 111 / 1,129 / 11,561), never more than 11 different cells per level · only π*: 10 nodes at k = 2 |
 | Policy evaluation (lesson 7) | Policy iteration tab, Evaluate | start cell: Always East −0.30, Always North 0.05, π* 0.49 |
-| Cell calculation in PI (lesson 7) | Policy iteration tab · Always East · cell (0, 0) | Evaluate: → only, V^π = −0.30 · Improve: ↑ −0.01, ← −0.24, ↓ −0.28, → −0.30 → changes to ↑ |
+| Inside a PI step (lesson 7) | Policy iteration tab · Always East · Evaluate: sweep slider + cell walk; Improve: cell walk | Evaluate: 92 sweeps, read V^π_{j−1} / table (→ only, no max) / write V^π_j; sweep 2 next to the pit −0.72 · Improve at (0, 0): ↑ −0.01, ← −0.24, ↓ −0.28, → −0.30 → changes to ↑ |
 | Policy iteration (lesson 7) | Policy iteration tab, start Always East / North | improvements change 6 then 2 cells (North: 5 then 1), then none: π* |
 
 The V\* values for `book` (γ 0.9, noise 0.2) match the CS188 lecture snapshot: 0.64 0.74 0.85 / 0.57 · 0.57 /
