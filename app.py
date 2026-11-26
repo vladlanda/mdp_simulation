@@ -219,23 +219,25 @@ with tab_vi:
         cur = order[j - 1] if j else None
         ex = m.explain(Vs[k - 1], cur) if cur else None
         small = max(45, cell_size(m) * 3 // 5)
-        b1, b2 = st.columns(2)
+        b1, bt, b2 = st.columns([1, 1.3, 1])
         with b1:
             st.markdown(f"**Read only: V{sub(k - 1)}** (light-blue frames: the cells this step reads)")
             show_svg(grid_svg(m, small, V=Vs[k - 1], read=reads(ex) if ex else (), uid='vir'))
         with b2:
             st.markdown(f"**Written: V{sub(k)}** (orange: the cell just computed)")
             show_svg(grid_svg(m, small, V={c: Vk[c] for c in order[:j]}, changed=[cur] if cur else (), uid='viw'))
-        if cur:
-            st.markdown(f"**{cell_name(m, cur)}**, V{sub(k)} = max over actions:")
-            st.markdown(breakdown(m, ex, f"V{sub(k - 1)}"))
-            st.markdown(f"V{sub(k)}{cur} = max = **{Vk[cur]:.2f}**")
-        else:
-            st.caption("▶ computes the first cell.")
+        with bt:
+            if cur:
+                st.markdown(f"**{cell_name(m, cur)}**, V{sub(k)} = max over actions:")
+                st.markdown(breakdown(m, ex, f"V{sub(k - 1)}"))
+                st.markdown(f"V{sub(k)}{cur} = max = **{Vk[cur]:.2f}**")
+            else:
+                st.caption("▶ computes the first cell.")
         st.caption(f"The order does not matter: every cell reads only V{sub(k - 1)} (left) and writes to a new "
                    f"table (right), so any order gives the same V{sub(k)}.")
 
 # ---------------- Tree ----------------
+MAX_NODES = 2500  # ponytail: fixed cap; the full book tree at k = 3 has ~1,100 state nodes, at k = 4 ~10,000
 with tab_tree:
     st.subheader("The tree behind V_k: expectimax, then folded into layers")
     m = controls("t", st.columns(4))
@@ -247,7 +249,8 @@ with tab_tree:
                           help="Row 0 is the bottom row.")
     k = stepper(o[1], o[2], o[3], "k (steps left = depth)", f"t_k_{m.name}", 8, "tk")
     view = o[4].radio("View", ["Tree", "Layers"], horizontal=True, key="t_view",
-                      help="Tree: the full expectimax tree (k ≤ 2). Layers: the same numbers, one board per V_j.")
+                      help=f"Tree: the full expectimax tree (up to {MAX_NODES:,} state nodes). "
+                           "Layers: the same numbers, one board per V_j.")
     ACTS = {"All actions (max)": None, "Only π*(s)": "opt", "Only East": "E", "Only North": "N"}
     which = o[5].selectbox("Actions at a state node", list(ACTS), key="t_acts",
                            help="All = Value iteration. One action per state = policy evaluation (no max).")
@@ -259,8 +262,9 @@ with tab_tree:
     left, right = st.columns([4, 1])
     if view == "Tree":
         with left:
-            if k > 2:
-                st.info(f"With k = {k} the tree has {n_tree:,} state nodes: too many to draw. "
+            if n_tree > MAX_NODES:
+                st.info(f"With k = {k} the tree has {n_tree:,} state nodes: too many to draw (the limit is "
+                        f"{MAX_NODES:,}). "
                         f"Switch to **Layers**: the same values from {k} × {len(m.cells)} updates.")
             else:
                 s1, s2, s3, s4 = st.columns([2.2, .5, .5, 1.8])
@@ -331,7 +335,7 @@ with tab_pi:
                              format_func=lambda c: cell_name(m, c), key=f"pi_cell_{m.name}")
         old = stages[i - 1]['pol'][pcell] if S['kind'] == 'improve' else S['pol'][pcell]
         pex = m.explain(S['V'], pcell, None if S['kind'] == 'improve' else [S['pol'][pcell]])
-    left, right = st.columns([3, 1])
+    left, mid, right = st.columns([2.2, 1.6, 1])
     with left:
         show_svg(grid_svg(m, cell_size(m), V=S['V'], pol=S['pol'], changed=S['changed'], uid='pi',
                           read=reads(pex) if pcell else ()))
@@ -340,6 +344,7 @@ with tab_pi:
                             "Orange frames: values that changed by more than 0.005.",
                     "improve": "Policy improvement (policy extraction): in every cell, the action with the best "
                                "one-step look-ahead on V^π. Orange frames: arrows that changed."}[S['kind']])
+    with mid:
         if S['kind'] == 'eval':
             st.markdown(f"**{cell_name(m, pcell)}**: only the policy's action {ARROW[old]}, no max. V^π is the final "
                         f"result of {S['sweeps']} sweeps, so the step gives back its own value:")

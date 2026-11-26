@@ -217,9 +217,11 @@ def zoom_html(svg, height=620, font=16):
 <script>
 const p = document.getElementById('p'), s = p.querySelector('svg'), w0 = +s.dataset.w;
 const pw = () => (p.clientWidth || 1e9) - 4;  // 0 while the tab is hidden
-let w = w0; s.style.width = w + 'px';  // start at 1:1, scrolled to the root (the middle)
-requestAnimationFrame(() => {{ p.scrollLeft = (w0 - p.clientWidth) / 2; }});
+let w = w0;
 function z(a) {{ w = a === 'fit' ? Math.min(pw(), 4 * w0) : a === 'one' ? w0 : w * a; s.style.width = w + 'px'; }}
+// every redraw (new step, new k) starts fitted; while the tab is hidden (width 0), fit once it shows
+if (p.clientWidth) z('fit'); else {{ s.style.width = w0 + 'px';
+  new ResizeObserver((e, o) => {{ if (p.clientWidth) {{ z('fit'); o.disconnect(); }} }}).observe(p); }}
 </script>"""
 
 
